@@ -81,19 +81,26 @@ class DockerCompose:
             sys.exit(1)
         return isinstance(self.networks[network], dict) and 'external' in self.networks[network]
 
-    def up(self):
+    def create_networks(self):
         for network in self.networks:
             if not self.is_external_network(network):
                 cmd = '[ "`docker network ls | awk \'{{print $2}}\' | egrep \'^{0}$\'`" != "" ] || docker network create --driver overlay --opt encrypted {0}' \
                     .format(self.project_prefix(network))
                 self.call(cmd)
 
+    def create_volumes(self):
         for volume in self.volumes:
             cmd = '[ "`docker volume ls | awk \'{{print $2}}\' | egrep \'^{0}$\'`" != "" ] || docker volume create --name {0}' \
                 .format(self.project_prefix(volume))
             if isinstance(self.volumes[volume], dict) and self.volumes[volume]['driver']:
                 cmd = cmd + ' --driver={0}'.format(self.volumes[volume]['driver'])
+            for opt in self.volumes[volume]['driver_opts']:
+                cmd = cmd + ' \\\n --opt {}={}'.format(opt, self.volumes[volume]['driver_opts'][opt])
             self.call(cmd)
+
+    def up(self):
+        self.create_networks()
+        self.create_volumes()
 
         services_to_start = []
 
