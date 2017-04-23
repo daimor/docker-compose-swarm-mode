@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+# pylint: disable=locally-disabled, C0111, line-too-long
+
 import argparse
 import os
 import subprocess
@@ -10,17 +12,16 @@ from collections import OrderedDict
 import yaml
 import yodl
 
-debug = False
+DEBUG = False
 
-
-class DockerCompose:
+class DockerCompose(object):
     def __init__(self, compose, project, compose_base_dir, requested_services):
         self.project = project
         self.compose_base_dir = compose_base_dir
         self.services = self.merge_services(compose.get('services', {}))
         self.networks = compose.get('networks', {})
         self.volumes = compose.get('volumes', {})
-        self.filtered_services = filter(lambda service: not requested_services or service in requested_services, self.services)
+        self.filtered_services = [service for service in self.services if not requested_services or service in requested_services]
 
     def project_prefix(self, value):
         return '{}_{}'.format(self.project, value) if self.project else value
@@ -45,27 +46,27 @@ class DockerCompose:
                 else:
                     extended_service_data = result[extended_service]
 
-                merge(result[service], extended_service_data, None, self.mergeEnv)
+                merge(result[service], extended_service_data, None, self.merge_env)
 
         return result
 
     @staticmethod
-    def mergeEnv(a, b, key):
+    def merge_env(obj1, obj2, key):
         if key == 'environment':
-            if isinstance(a[key], dict) and isinstance(b[key], list):
-                a[key] = b[key] + list({'{}={}'.format(k, v) for k, v in a[key].items()})
-            elif isinstance(a[key], list) and isinstance(b[key], dict):
-                a[key][:0] = list({'{}={}'.format(k, v) for k, v in b[key].items()})
+            if isinstance(obj1[key], dict) and isinstance(obj2[key], list):
+                obj1[key] = obj2[key] + list({'{}={}'.format(k, v) for k, v in obj1[key].items()})
+            elif isinstance(obj1[key], list) and isinstance(obj2[key], dict):
+                obj1[key][:0] = list({'{}={}'.format(k, v) for k, v in obj2[key].items()})
             else:
-                raise ('Unknown type of "{}" value (should be either list or dictionary)'.format(key))
+                raise 'Unknown type of "{}" value (should be either list or dictionary)'.format(key)
 
     @staticmethod
     def call(cmd, ignore_return_code=False):
-        print('Running: \n' + cmd + '\n')
-        if not debug:
-            ps = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            returncode = ps.wait()
-            stdout = ps.communicate()[0]
+        print 'Running: \n' + cmd + '\n'
+        if not DEBUG:
+            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            returncode = proc.wait()
+            stdout = proc.communicate()[0]
             if returncode != 0 and not ignore_return_code:
                 print >> sys.stderr, ('Error: command "{}" failed: {}'.format(cmd, stdout))
                 sys.exit(returncode)
@@ -98,7 +99,130 @@ class DockerCompose:
                 cmd = cmd + ' \\\n --opt {}={}'.format(opt, self.volumes[volume]['driver_opts'][opt])
             self.call(cmd)
 
-    def up(self):
+    def service_create(self, service):
+        service_config = self.services[service]
+        cmd = ['docker service create --with-registry-auth \\\n --name', self.project_prefix(service), '\\\n']
+
+        service_image = []
+        service_command = []
+
+        def add_flag(key, value):
+            cmd.extend([key, shellquote(value), '\\\n'])
+
+        value = ''
+
+        for parameter in service_config:
+            value = service_config[parameter]
+
+            def restart():  # pylint: disable=unused-variable
+                add_flag('--restart-condition', {'always': 'any'}[value])
+
+            def logging():  # pylint: disable=unused-variable
+                add_flag('--log-driver', value.get('driver', 'json-file'))
+                log_opts = value['options']
+                if log_opts:
+                    for key, item in log_opts.items():
+                        if item is not None:
+                            add_flag('--log-opt', '{}={}'.format(key, item))
+
+            def mem_limit():  # pylint: disable=unused-variable
+                add_flag('--limit-memory', value)
+
+            def image():  # pylint: disable=unused-variable
+                service_image.append(value)
+
+            def command():  # pylint: disable=unused-variable
+                if isinstance(value, list):
+                    service_command.extend(value)
+                else:
+                    service_command.extend(value.split(' '))
+
+            def expose():  # pylint: disable=unused-variable
+                pass  # unsupported
+
+            def container_name():  # pylint: disable=unused-variable
+                pass  # unsupported
+
+            def hostname():  # pylint: disable=unused-variable
+                add_flag('--hostname', value)
+
+            def labels():  # pylint: disable=unused-variable
+                value = service_config[parameter]
+                # ^ working-around the lack of `nonlocal` statement.
+                if isinstance(value, dict):
+                    value = ('%s=%s' % i for i in value.iteritems())
+
+                for label in value:
+                    add_flag('--label', label)
+
+            def mode():  # pylint: disable=unused-variable
+                add_flag('--mode', value)
+
+            def extra_hosts():  # pylint: disable=unused-variable
+                pass  # unsupported
+
+            def ports():  # pylint: disable=unused-variable
+                for port in value:
+                    add_flag('--publish', port)
+
+            def networks():  # pylint: disable=unused-variable
+                for network in value:
+                    add_flag('--network', network if self.is_external_network(network) else self.project_prefix(network))
+
+            def volumes():  # pylint: disable=unused-variable
+                for volume in value:
+                    splitted_volume = volume.split(':')
+                    src = splitted_volume.pop(0)
+                    dst = splitted_volume.pop(0)
+                    readonly = 0
+                    if splitted_volume and splitted_volume[0] == 'ro':
+                        readonly = 1
+                    if src.startswith('.'):
+                        src = src.replace('.', self.compose_base_dir, 1)
+
+                    if src.startswith('/'):
+                        add_flag('--mount', 'type=bind,src={},dst={},readonly={}'.format(src, dst, readonly))
+                    else:
+                        add_flag('--mount', 'src={},dst={},readonly={}'.format(self.project_prefix(src), dst, readonly))
+
+            def environment():  # pylint: disable=unused-variable
+                if isinstance(value, dict):
+                    for key, item in value.items():
+                        add_flag('--env', '{}={}'.format(key, item))
+                else:
+                    for env in value:
+                        if env.startswith('constraint') or env.startswith('affinity'):
+                            constraint = env.split(':', 2)[1]
+                            add_flag('--constraint', constraint)
+                        else:
+                            add_flag('--env', env)
+
+            def replicas():  # pylint: disable=unused-variable
+                add_flag('--replicas', value)
+
+            def env_file():  # pylint: disable=unused-variable
+                for item in value:
+                    with open(item) as env_file:
+                        for line in env_file:
+                            if not line.startswith('#') and line.strip():
+                                add_flag('--env', line.strip())
+
+
+            def unsupported():
+                print >> sys.stderr, ('WARNING: unsupported parameter {}'.format(parameter))
+
+            locals().get(parameter, unsupported)()
+
+        if not service_image:
+            print 'ERROR: no image specified for %s service' % service
+            sys.exit(1)
+
+        cmd.extend(service_image)
+        cmd.extend(service_command)
+
+        self.call(' '.join(cmd))
+
+    def service_up(self):
         self.create_networks()
         self.create_volumes()
 
@@ -109,128 +233,10 @@ class DockerCompose:
                 services_to_start.append(service)
                 continue
 
-            service_config = self.services[service]
-            cmd = ['docker service create --with-registry-auth \\\n --name', self.project_prefix(service), '\\\n']
-
-            service_image = []
-            service_command = []
-
-            def add_flag(key, value):
-                cmd.extend([key, shellquote(value), '\\\n'])
-
-            for parameter in service_config:
-                value = service_config[parameter]
-
-                def restart():
-                    add_flag('--restart-condition', {'always': 'any'}[value])
-
-                def logging():
-                    add_flag('--log-driver', value.get('driver', 'json-file'))
-                    log_opts = value['options']
-                    if log_opts:
-                        for k, v in log_opts.items():
-                            if v is not None:
-                                add_flag('--log-opt', '{}={}'.format(k, v))
-
-                def mem_limit():
-                    add_flag('--limit-memory', value)
-
-                def image():
-                    service_image.append(value)
-
-                def command():
-                    if isinstance(value, list):
-                        service_command.extend(value)
-                    else:
-                        service_command.extend(value.split(' '))
-
-                def expose():
-                    pass  # unsupported
-
-                def container_name():
-                    pass  # unsupported
-
-                def hostname():
-                    pass  # unsupported; waiting for https://github.com/docker/docker/issues/24877
-
-                def labels():
-                    value = service_config[parameter]
-                    # ^ working-around the lack of `nonlocal` statement.
-                    if isinstance(value, dict):
-                        value = ('%s=%s' % i for i in value.iteritems())
-
-                    for label in value:
-                        add_flag('--label', label)
-
-                def mode():
-                    add_flag('--mode', value)
-
-                def extra_hosts():
-                    pass  # unsupported
-
-                def ports():
-                    for port in value:
-                        add_flag('--publish', port)
-
-                def networks():
-                    for network in value:
-                        add_flag('--network', network if self.is_external_network(network) else self.project_prefix(network))
-
-                def volumes():
-                    for volume in value:
-                        splitted_volume = volume.split(':')
-                        src = splitted_volume.pop(0)
-                        dst = splitted_volume.pop(0)
-                        readonly = 0
-                        if splitted_volume and splitted_volume[0] == 'ro':
-                            readonly = 1
-                        if src.startswith('.'):
-                            src = src.replace('.', self.compose_base_dir, 1)
-
-                        if src.startswith('/'):
-                            add_flag('--mount', 'type=bind,src={},dst={},readonly={}'.format(src, dst, readonly))
-                        else:
-                            add_flag('--mount', 'src={},dst={},readonly={}'.format(self.project_prefix(src), dst, readonly))
-
-                def environment():
-                    if isinstance(value, dict):
-                        for k, v in value.items():
-                            add_flag('--env', '{}={}'.format(k, v))
-                    else:
-                        for env in value:
-                            if env.startswith('constraint') or env.startswith('affinity'):
-                                constraint = env.split(':', 2)[1]
-                                add_flag('--constraint', constraint)
-                            else:
-                                add_flag('--env', env)
-
-                def replicas():
-                    add_flag('--replicas', value)
-
-                def env_file():
-                    for v in value:
-                        with open(v) as env_file:
-                            for line in env_file:
-                                if not line.startswith('#') and line.strip():
-                                    add_flag('--env', line.strip())
-
-
-                def unsupported():
-                    print >> sys.stderr, ('WARNING: unsupported parameter {}'.format(parameter))
-
-                locals().get(parameter, unsupported)()
-
-            if len(service_image) == 0:
-                print('ERROR: no image specified for %s service' % service)
-                sys.exit(1)
-
-            cmd.extend(service_image)
-            cmd.extend(service_command)
-
-            self.call(' '.join(cmd))
+            self.service_create(service)
 
         if services_to_start:
-            self.start(services_to_start)
+            self.service_start(services_to_start)
 
     def pull(self):
         nodes = self.call("docker node ls | grep Ready | awk -F'[[:space:]][[:space:]]+' '{print $2}'").rstrip().split('\n')
@@ -242,26 +248,26 @@ class DockerCompose:
             threads.append((node, threading.Thread(target=self.call, args=(cmd,))))
 
         for node, thread in threads:
-            print('Pulling on node {}'.format(node))
+            print 'Pulling on node {}'.format(node)
             thread.start()
 
         for node, thread in threads:
             thread.join()
-            print('Node {} - DONE'.format(node))
+            print 'Node {} - DONE'.format(node)
 
-    def stop(self):
+    def service_stop(self):
         services = filter(self.is_service_exists, self.filtered_services)
         cmd_args = ['{}={}'.format(self.project_prefix(service), 0) for service in services]
         if cmd_args:
             self.call('docker service scale ' + ' '.join(cmd_args))
 
-    def rm(self):
+    def service_remove(self):
         services = filter(self.is_service_exists, self.filtered_services)
         cmd_args = [self.project_prefix(service) for service in services]
         if cmd_args:
             self.call('docker service rm ' + ' '.join(cmd_args))
 
-    def start(self, services=None):
+    def service_start(self, services=None):
         if services is None:
             services = self.filtered_services
 
@@ -299,31 +305,31 @@ def main():
     pull_parser.set_defaults(command='pull')
 
     rm_parser = subparsers.add_parser('rm', help='Stop and remove services', add_help=False, parents=[services_parser])
-    rm_parser.set_defaults(command='rm')
+    rm_parser.set_defaults(command='service_remove')
     rm_parser.add_argument('-f', help='docker-compose compatibility; ignored', action='store_true')
 
     start_parser = subparsers.add_parser('start', help='Start services', add_help=False, parents=[services_parser])
-    start_parser.set_defaults(command='start')
+    start_parser.set_defaults(command='service_start')
 
     stop_parser = subparsers.add_parser('stop', help='Stop services', add_help=False, parents=[services_parser])
-    stop_parser.set_defaults(command='stop')
+    stop_parser.set_defaults(command='service_stop')
 
     up_parser = subparsers.add_parser('up', help='Create and start services', add_help=False, parents=[services_parser])
-    up_parser.set_defaults(command='up')
+    up_parser.set_defaults(command='service_up')
     up_parser.add_argument('-d', help='docker-compose compatibility; ignored', action='store_true')
 
     args = parser.parse_args(sys.argv[1:])
 
-    if len(args.file) == 0:
+    if not args.file:
         try:
             args.file = map(lambda f: open(f), os.environ['COMPOSE_FILE'].split(':'))
         except IOError as e:
-            print(e)
+            print e
             parser.print_help()
             sys.exit(1)
 
-    global debug
-    debug = args.dry_run
+    global DEBUG
+    DEBUG = args.dry_run
 
     compose_base_dir = os.path.dirname(os.path.abspath(args.file[0].name))
 
