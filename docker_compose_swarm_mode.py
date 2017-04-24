@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 import threading
-from collections import OrderedDict
+from collections import OrderedDict, deque
 
 import yaml
 import yodl
@@ -106,8 +106,13 @@ class DockerCompose(object):
         service_image = []
         service_command = []
 
-        def add_flag(key, value):
-            cmd.extend([key, shellquote(value), '\\\n'])
+        def add_flag(key, value=None):
+            if value is None:
+                cmd.extend([key, '\\\n'])
+            elif isinstance(value, int):
+                cmd.extend([key, str(value), '\\\n'])
+            else:
+                cmd.extend([key, shellquote(value), '\\\n'])
 
         value = ''
 
@@ -145,6 +150,34 @@ class DockerCompose(object):
 
             def hostname():  # pylint: disable=unused-variable
                 add_flag('--hostname', value)
+
+            #   --health-cmd string                Command to run to check health
+            #   --health-interval duration         Time between running the check (ns|us|ms|s|m|h)
+            #   --health-retries int               Consecutive failures needed to report unhealthy
+            #   --health-timeout duration          Maximum time to allow one check to run (ns|us|ms|s|m|h)
+            #   --no-healthcheck                   Disable any container-specified HEALTHCHECK
+            def healthcheck():  # pylint: disable=unused-variable
+                if 'disable' in value and value['disable']:
+                    add_flag('--no-healthcheck')
+                    return
+                if 'test' in value:
+                    test = deque(value['test'])
+                    test_type = test.popleft()
+                    print test
+                    print test_type
+                    if test:
+                        if test_type == 'NONE':
+                            add_flag('--no-healthcheck')
+                        if test_type == 'CMD':
+                            add_flag('--healthcheck-cmd', ' '.join(test))
+                        if test_type == 'CMD-SHELL':
+                            add_flag('--healthcheck-cmd', ' '.join(test))
+                if 'interval' in value:
+                    add_flag('--health-interval', value['interval'])
+                if 'retries' in value:
+                    add_flag('--health-retries', value['retries'])
+                if 'timeout' in value:
+                    add_flag('--health-timeout', value['timeout'])
 
             def labels():  # pylint: disable=unused-variable
                 value = service_config[parameter]
