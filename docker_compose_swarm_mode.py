@@ -188,8 +188,49 @@ class DockerCompose(object):
                 for label in value:
                     add_flag('--label', label)
 
-            def mode():  # pylint: disable=unused-variable
-                add_flag('--mode', value)
+            # --mode string                      Service mode (replicated or global) (default "replicated")
+            # --replicas uint                    Number of tasks
+            # --constraint list                  Placement constraints (default [])
+            # --restart-condition string         Restart when condition is met (none, on-failure, or any)
+            # --restart-delay duration           Delay between restart attempts (ns|us|ms|s|m|h)
+            # --restart-max-attempts uint        Maximum number of restarts before giving up
+            # --restart-window duration          Window used to evaluate the restart policy (ns|us|ms|s|m|h)
+            # --update-delay duration            Delay between updates (ns|us|ms|s|m|h) (default 0s)
+            # --update-failure-action string     Action on update failure (pause|continue) (default "pause")
+            # --update-max-failure-ratio float   Failure rate to tolerate during an update
+            # --update-monitor duration          Duration after each task update to monitor for failure (ns|us|ms|s|m|h) (default 0s)
+            # --update-parallelism uint          Maximum number of tasks updated simultaneously (0 to update all at once) (default 1)
+            def deploy():  # pylint: disable=unused-variable
+                if 'mode' in value:
+                    add_flag('--mode', value['mode'])
+                if 'replicas' in value:
+                    add_flag('--replicas', value['replicas'])
+                if 'placement' in value and 'constraints' in value['placement']:
+                    constraints = value['placement']['constraints']
+                    for constraint in constraints:
+                        add_flag('--constraint', constraint)
+                if 'restart_policy' in value:
+                    restart_policy = value['restart_policy']
+                    if 'condition' in restart_policy:
+                        add_flag('--restart-condition', restart_policy['condition'])
+                    if 'delay' in restart_policy:
+                        add_flag('--restart-delay', restart_policy['delay'])
+                    if 'max_attempts' in restart_policy:
+                        add_flag('--restart-max-attempts', restart_policy['max_attempts'])
+                    if 'window' in restart_policy:
+                        add_flag('--restart-window', restart_policy['window'])
+                if 'update_config' in value:
+                    update_config = value['update_config']
+                    if 'delay' in update_config:
+                        add_flag('--update-delay', update_config['delay'])
+                    if 'failure_action' in update_config:
+                        add_flag('--update-failure-action', update_config['failure_action'])
+                    if 'max_failure_ratio' in update_config:
+                        add_flag('--update-max-failure-ratio', update_config['max_failure_ratio'])
+                    if 'monitor' in update_config:
+                        add_flag('--update-monitor', update_config['monitor'])
+                    if 'parallelism' in update_config:
+                        add_flag('--update-parallelism', update_config['parallelism'])
 
             def extra_hosts():  # pylint: disable=unused-variable
                 pass  # unsupported
@@ -229,9 +270,6 @@ class DockerCompose(object):
                             add_flag('--constraint', constraint)
                         else:
                             add_flag('--env', env)
-
-            def replicas():  # pylint: disable=unused-variable
-                add_flag('--replicas', value)
 
             def env_file():  # pylint: disable=unused-variable
                 for item in value:
