@@ -232,8 +232,14 @@ class DockerCompose(object):
                     if 'parallelism' in update_config:
                         add_flag('--update-parallelism', update_config['parallelism'])
 
+            # --host list                        Set one or more custom host-to-IP mappings (host:ip) (default [])
             def extra_hosts():  # pylint: disable=unused-variable
-                pass  # unsupported
+                for host in value:
+                    add_flag('--host', host)
+
+            # --log-driver string                Logging driver for service
+            def log_driver():  # pylint: disable=unused-variable
+                add_flag('--log-driver', value)
 
             def ports():  # pylint: disable=unused-variable
                 for port in value:
